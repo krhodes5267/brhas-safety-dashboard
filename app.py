@@ -121,7 +121,7 @@ st.markdown("""
 # =====================================================================
 
 YARD_REGIONS = {
-    "Midland":    ["midland", "odessa", "west odessa", "stanton", "big spring",
+    "Midland":    ["midland", "yukon", "odessa", "west odessa", "stanton", "big spring",
                    "garden city", "crane", "rankin", "mccamey"],
     "Bryan":      ["bryan", "college station", "palestine", "madisonville",
                    "hearne", "navasota", "huntsville"],
@@ -234,6 +234,19 @@ def parse_motive(raw):
         "yard_drivers": {y: dict(c.most_common()) for y, c in yard_drivers.items()},
         "fetched_at": raw.get("fetched_at"),
     }
+
+
+DISTRICT_ALIASES = {
+    "midland yukon": "Midland",
+    "midland per": "Midland",
+}
+
+def normalize_district(raw_district):
+    """Combine Midland Yukon / Midland PER into Midland."""
+    if not raw_district:
+        return raw_district
+    key = raw_district.strip().lower()
+    return DISTRICT_ALIASES.get(key, raw_district.strip())
 
 
 CASING_SERVICE_LINES = {"casing"}
@@ -502,7 +515,7 @@ with st.expander(f"**KPA Incidents — Casing: {incidents['count']}**"):
     if incidents["count"] > 0:
         for item in incidents["items"]:
             inc_type = item.get("Incident Type", "—")
-            district = item.get("District", "—")
+            district = normalize_district(item.get("District", "—"))
             date = item.get("Date", "—")
             employee = item.get("Employee", "—")
             st.write(f"- **{inc_type}** — {district} — {employee} ({date})")
@@ -514,7 +527,7 @@ with st.expander(f"**Observations — Casing: {observations['count']}**"):
     obs_districts = Counter()
     for item in observations["items"]:
         obs_types[item.get("Type of Observation", "—")] += 1
-        obs_districts[item.get("District", "—")] += 1
+        obs_districts[normalize_district(item.get("District", "—"))] += 1
     if obs_types:
         st.markdown("**By type:**")
         for t, c in obs_types.most_common():
@@ -527,7 +540,7 @@ with st.expander(f"**Observations — Casing: {observations['count']}**"):
 # Fix #6: Replaced hardcoded fake names with live KPA observer data
 obs_by_district = {}
 for item in observations["items"]:
-    district = (item.get("District") or "Unknown").strip()
+    district = normalize_district(item.get("District") or "Unknown")
     observer = (item.get("Observer") or "Unknown").strip()
     if district and observer:
         obs_by_district.setdefault(district, Counter())[observer] += 1
