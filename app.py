@@ -210,7 +210,7 @@ def parse_motive(raw):
     }
 
 
-CASING_SERVICE_LINES = {"casing", "rat hole"}
+CASING_SERVICE_LINES = {"casing"}
 
 def parse_kpa(raw, key):
     if not raw:
