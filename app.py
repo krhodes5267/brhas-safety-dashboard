@@ -1,6 +1,7 @@
 import re
 import streamlit as st
 import json
+import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +28,7 @@ YELLOW = "#d97706"
 GRAY = "#64748b"
 
 # ── Custom CSS ────────────────────────────────────────────────────────
+# Fix #3: dark mode support added via @media (prefers-color-scheme: dark)
 
 st.markdown("""
 <style>
@@ -53,6 +55,9 @@ st.markdown("""
     .kpi-badge-green { display: inline-block; margin-top: 6px; background: #d1fae5;
                        color: #065f46; padding: 2px 10px; border-radius: 4px;
                        font-size: 10px; font-weight: 700; }
+    .kpi-badge-yellow { display: inline-block; margin-top: 6px; background: #fef3c7;
+                        color: #92400e; padding: 2px 10px; border-radius: 4px;
+                        font-size: 10px; font-weight: 700; }
     /* Alert box */
     .alert-box {
         background: linear-gradient(135deg, #fef2f2, #fff5f5);
@@ -78,6 +83,35 @@ st.markdown("""
     }
     /* Footer */
     .footer-text { font-size: 11px; color: #94a3b8; text-align: center; }
+    /* Manual entry tag (Fix #2) */
+    .manual-tag {
+        display: inline-block; font-size: 9px; background: #f1f5f9;
+        color: #64748b; padding: 1px 6px; border-radius: 3px;
+        font-weight: 600; letter-spacing: 0.5px; margin-left: 6px;
+        vertical-align: middle; text-transform: uppercase;
+    }
+
+    /* Fix #3: Dark mode support */
+    @media (prefers-color-scheme: dark) {
+        .kpi-card { background: #1e293b !important; border-color: #334155 !important;
+                    box-shadow: 0 1px 4px rgba(0,0,0,0.3) !important; }
+        .kpi-label { color: #94a3b8 !important; }
+        .kpi-detail { color: #64748b !important; }
+        .alert-box { background: linear-gradient(135deg, #1a1a2e, #2d1f1f) !important;
+                     border-color: #7f1d1d !important; }
+        .alert-body { color: #e2e8f0 !important; }
+        .yard-hdr { color: #e2e8f0 !important; }
+        .footer-text { color: #64748b !important; }
+        .manual-tag { background: #334155 !important; color: #94a3b8 !important; }
+        .kpi-badge-red { background: #7f1d1d !important; color: #fecaca !important; }
+        .kpi-badge-green { background: #064e3b !important; color: #a7f3d0 !important; }
+        .kpi-badge-yellow { background: #78350f !important; color: #fde68a !important; }
+    }
+    /* Streamlit-specific dark mode (theme toggle) */
+    [data-testid="stAppViewContainer"][style*="background-color: rgb(14"] .kpi-card,
+    [data-testid="stAppViewContainer"][style*="background-color: rgb(0"] .kpi-card {
+        background: #1e293b !important; border-color: #334155 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -115,15 +149,7 @@ def load_json(filename):
 
 
 def is_casing_vehicle(vehicle_number):
-    """Return True if the vehicle belongs to the Casing division.
-
-    Casing vehicles follow two naming patterns:
-      - Number ending with 'C' (e.g. 1894C, 5015C, 2352C - CDL A DRIVER)
-      - Contains '-RAT-' for rat-hole operations (e.g. LL-RAT-2516, WIN-RAT-2284)
-
-    Non-casing prefixes (excluded): BTI (trucking), VAL (valor),
-    POL (polaris), CON (construction), PIT, SALES, Safety-only.
-    """
+    """Return True if the vehicle belongs to the Casing division."""
     if not vehicle_number:
         return False
     vn = vehicle_number.strip()
@@ -241,9 +267,57 @@ motive = parse_motive(motive_raw)
 incidents = parse_kpa(incidents_raw, "incidents")
 observations = parse_kpa(observations_raw, "observations")
 
+# Fix #9: Compute timestamp early for use in header AND sidebar
+fetched_raw = motive.get("fetched_at") or incidents.get("fetched_at") or ""
+try:
+    fetched_dt = datetime.fromisoformat(fetched_raw)
+    fetched_str = fetched_dt.strftime("%b %d, %Y at %I:%M %p")
+except Exception:
+    fetched_str = fetched_raw or "—"
+
 
 # =====================================================================
-#  HEADER WITH LOGO
+#  FIX #5: SIDEBAR NAVIGATION
+# =====================================================================
+
+with st.sidebar:
+    if LOGO_PATH.exists():
+        st.image(str(LOGO_PATH), width=140)
+    else:
+        st.markdown(
+            f'<div style="font-size:24px; font-weight:900; color:{RED};">BRHAS</div>',
+            unsafe_allow_html=True)
+    st.markdown(
+        f'<span style="font-weight:700; color:{RED};">Casing Division</span>',
+        unsafe_allow_html=True)
+    st.caption(f"Updated: {fetched_str}")
+    st.divider()
+
+    st.markdown("**Quick Stats**")
+    sb1, sb2 = st.columns(2)
+    sb1.metric("Motive Events", motive["count"])
+    sb2.metric("Observations", observations["count"])
+    sb3, sb4 = st.columns(2)
+    sb3.metric("Incidents", incidents["count"])
+    sb4.metric("Drivers Flagged", len(motive.get("drivers", {})))
+    st.divider()
+
+    st.markdown("**Sections**")
+    st.markdown(
+        "1. KPI Targets vs Actual\n"
+        "2. Financial Impact\n"
+        "3. Predictive Alert\n"
+        "4. Live Division Summary\n"
+        "5. Division Drill-Downs\n"
+        "6. Repeat Offenders\n"
+        "7. Actions & Results\n"
+        "8. Casing Yards Breakdown\n"
+        "9. Overall Insights"
+    )
+
+
+# =====================================================================
+#  HEADER WITH LOGO  (Fix #9: timestamp shown in subtitle)
 # =====================================================================
 
 col_logo, col_title = st.columns([0.12, 0.88])
@@ -260,7 +334,8 @@ with col_title:
         'BRHAS Safety Dashboard</span>', unsafe_allow_html=True)
     st.markdown(
         f'<span style="font-size:14px; color:{GRAY};">'
-        'Casing Division &nbsp;|&nbsp; Live Safety Intelligence</span>',
+        f'Casing Division &nbsp;|&nbsp; Live Safety Intelligence'
+        f' &nbsp;|&nbsp; Updated: {fetched_str}</span>',
         unsafe_allow_html=True)
 
 filter_parts = []
@@ -281,6 +356,8 @@ st.divider()
 
 # =====================================================================
 #  1 ─ KPI TARGETS vs ACTUAL
+#      Fix #1: Driver Score badge corrected to red "BELOW TARGET"
+#      Fix #2: MANUAL tags on hardcoded KPIs
 # =====================================================================
 
 st.markdown('<div class="section-hdr">📊 KPI Targets vs Actual</div>',
@@ -290,7 +367,7 @@ c1, c2, c3, c4 = st.columns(4)
 
 with c1:
     st.markdown("""<div class="kpi-card">
-        <div class="kpi-label">TRIR</div>
+        <div class="kpi-label">TRIR <span class="manual-tag">MANUAL</span></div>
         <div class="kpi-value" style="color:#dc2626">2.3</div>
         <div class="kpi-detail">Target: &lt;2.0 &nbsp;|&nbsp; Industry: 3.5</div>
         <div class="kpi-badge-red">ABOVE TARGET</div>
@@ -298,7 +375,7 @@ with c1:
 
 with c2:
     st.markdown("""<div class="kpi-card">
-        <div class="kpi-label">LTIR</div>
+        <div class="kpi-label">LTIR <span class="manual-tag">MANUAL</span></div>
         <div class="kpi-value" style="color:#dc2626">0.8</div>
         <div class="kpi-detail">Target: &lt;0.5 &nbsp;|&nbsp; Industry: 1.2</div>
         <div class="kpi-badge-red">ABOVE TARGET</div>
@@ -306,28 +383,32 @@ with c2:
 
 with c3:
     st.markdown("""<div class="kpi-card">
-        <div class="kpi-label">Driver Score</div>
-        <div class="kpi-value" style="color:#059669">78</div>
+        <div class="kpi-label">Driver Score <span class="manual-tag">MANUAL</span></div>
+        <div class="kpi-value" style="color:#d97706">78</div>
         <div class="kpi-detail">Target: &gt;85 &nbsp;|&nbsp; Industry: 72</div>
-        <div class="kpi-badge-green">ABOVE INDUSTRY</div>
+        <div class="kpi-badge-red">BELOW TARGET</div>
     </div>""", unsafe_allow_html=True)
 
 with c4:
+    obs_rate = observations["count"] / 7
+    obs_on_track = observations["count"] >= 30
     st.markdown(f"""<div class="kpi-card">
-        <div class="kpi-label">Observations</div>
-        <div class="kpi-value" style="color:#059669">{observations['count']}</div>
-        <div class="kpi-detail">Target: 30+ &nbsp;|&nbsp; Rate: {observations['count']/7:.1f}/day</div>
-        <div class="kpi-badge-green">ON TRACK</div>
+        <div class="kpi-label">Observations (7d)</div>
+        <div class="kpi-value" style="color:{GREEN if obs_on_track else YELLOW}">{observations['count']}</div>
+        <div class="kpi-detail">Target: 30+ &nbsp;|&nbsp; Rate: {obs_rate:.1f}/day</div>
+        <div class="{'kpi-badge-green' if obs_on_track else 'kpi-badge-yellow'}">{'ON TRACK' if obs_on_track else 'BELOW TARGET'}</div>
     </div>""", unsafe_allow_html=True)
 
 st.write("")
 
 # =====================================================================
-#  2 ─ FINANCIAL IMPACT
+#  2 ─ FINANCIAL IMPACT  (Fix #2: MANUAL ENTRY label in section header)
 # =====================================================================
 
-st.markdown('<div class="section-hdr">💰 Financial Impact</div>',
-            unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-hdr">💰 Financial Impact'
+    ' <span class="manual-tag">MANUAL ENTRY</span></div>',
+    unsafe_allow_html=True)
 
 c1, c2, c3, c4 = st.columns(4)
 
@@ -362,15 +443,23 @@ with c4:
 st.write("")
 
 # =====================================================================
-#  3 ─ PREDICTIVE ALERT
+#  3 ─ PREDICTIVE ALERT  (Fix #2: CURATED label)
 # =====================================================================
 
-st.markdown('<div class="section-hdr">⚡ Predictive Alert</div>',
-            unsafe_allow_html=True)
+top_yard_name = "Midland"
+top_yard_count = 0
+if motive.get("by_yard"):
+    top_yard_name, top_yard_count = max(
+        motive["by_yard"].items(), key=lambda x: x[1])
 
-st.markdown("""
+st.markdown(
+    '<div class="section-hdr">⚡ Predictive Alert'
+    ' <span class="manual-tag">CURATED</span></div>',
+    unsafe_allow_html=True)
+
+st.markdown(f"""
 <div class="alert-box">
-    <div class="alert-title">Midland Trend: +40% vs Jan</div>
+    <div class="alert-title">{top_yard_name} Hotspot: {top_yard_count} Motive events this week</div>
     <div class="alert-body">
         If trend continues: <b>12-14 incidents</b> by month-end.<br>
         Root cause: supervisor transition (44%), weather (33%), equipment (22%).<br>
@@ -382,27 +471,32 @@ st.markdown("""
 
 
 # =====================================================================
-#  4 ─ DIVISION SUMMARY
+#  4 ─ LIVE DIVISION SUMMARY  (Fix #10: replaced duplicate TRIR/LTIR
+#      with live-data metrics that don't overlap with section 1)
 # =====================================================================
 
-st.markdown('<div class="section-hdr">🏭 Casing Division Summary</div>',
-            unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-hdr">📋 Casing Division — Live Summary</div>',
+    unsafe_allow_html=True)
 
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Avg Driver Score", "78", "+2")
-c2.metric("Total Man Hours", "2,840")
-c3.metric("Recordables", "1")
-c4.metric("TRIR", "2.3", "+0.3", delta_color="inverse")
-c5.metric("LTIR", "0.8", "-0.1")
+s1, s2, s3, s4, s5 = st.columns(5)
+s1.metric("Motive Events (7d)", motive["count"])
+s2.metric("Unique Drivers Flagged", len(motive.get("drivers", {})))
+s3.metric("Observations (7d)", observations["count"])
+s4.metric("Incidents (7d)", incidents["count"])
+s5.metric("Yards with Events", len(motive.get("by_yard", {})))
 
 st.write("")
 
 # =====================================================================
 #  5 ─ DIVISION DRILL-DOWNS
+#      Fix #6: Rig Audits replaced with live observer data from KPA
+#      Fix #7: Changed emoji from 🏭 (duplicate) — now uses 🔍
 # =====================================================================
 
-st.markdown('<div class="section-hdr">📋 Division Drill-Downs</div>',
-            unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-hdr">🔍 Division Drill-Downs</div>',
+    unsafe_allow_html=True)
 
 with st.expander(f"**KPA Incidents — Casing: {incidents['count']}**"):
     if incidents["count"] > 0:
@@ -430,21 +524,42 @@ with st.expander(f"**Observations — Casing: {observations['count']}**"):
         for d, c in obs_districts.most_common():
             st.write(f"- {d}: **{c}**")
 
-with st.expander("**Total Rig Audits: 24 (↑ 20% vs Jan)**"):
-    st.markdown(
-        "**Midland (12):** John Smith 4 | Maria Garcia 3 | Robert Lee 3 | Lisa Chen 2\n\n"
-        "**Bryan (8):** Jennifer White 3 | Michael Davis 3 | Patricia Moore 2\n\n"
-        "**Kilgore (4):** Steven Martinez 2 | Nancy Thomas 1 | Charles Garcia 1"
-    )
+# Fix #6: Replaced hardcoded fake names with live KPA observer data
+obs_by_district = {}
+for item in observations["items"]:
+    district = (item.get("District") or "Unknown").strip()
+    observer = (item.get("Observer") or "Unknown").strip()
+    if district and observer:
+        obs_by_district.setdefault(district, Counter())[observer] += 1
+
+total_observers = sum(len(v) for v in obs_by_district.values())
+with st.expander(
+    f"**Observation Audits by Observer — "
+    f"{total_observers} observers across {len(obs_by_district)} districts**"
+):
+    if obs_by_district:
+        for district, observers in sorted(
+            obs_by_district.items(),
+            key=lambda x: sum(x[1].values()),
+            reverse=True,
+        ):
+            dist_total = sum(observers.values())
+            top_obs = " | ".join(
+                f"{name} {cnt}" for name, cnt in observers.most_common(5)
+            )
+            st.markdown(f"**{district} ({dist_total}):** {top_obs}")
+    else:
+        st.caption("No observer data available.")
 
 st.write("")
 
 # =====================================================================
-#  6 ─ REPEAT OFFENDERS (from live Motive data)
+#  6 ─ REPEAT OFFENDERS  (Fix #4: st.dataframe instead of columns)
 # =====================================================================
 
-st.markdown('<div class="section-hdr">🔄 Repeat Offenders — Live from Motive</div>',
-            unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-hdr">🔄 Repeat Offenders — Live from Motive</div>',
+    unsafe_allow_html=True)
 
 if motive["drivers"]:
     # Build per-driver type breakdown
@@ -457,32 +572,35 @@ if motive["drivers"]:
             etype = evt.get("type", "unknown").replace("_", " ").title()
             driver_types.setdefault(name, Counter())[etype] += 1
 
-    header_cols = st.columns([0.35, 0.30, 0.15, 0.20])
-    header_cols[0].markdown("**Driver**")
-    header_cols[1].markdown("**Top Violation**")
-    header_cols[2].markdown("**Count**")
-    header_cols[3].markdown("**Status**")
-
-    for name, total in list(motive["drivers"].items())[:8]:
+    # Fix #4: Use st.dataframe for mobile-friendly, sortable table
+    rows = []
+    for name, total in list(motive["drivers"].items())[:10]:
         top_type = driver_types.get(name, Counter()).most_common(1)
         violation = top_type[0][0] if top_type else "—"
-        trend = "↗ Coaching" if total >= 3 else ("→ Monitor" if total >= 2 else "✓ Low")
-        r1, r2, r3, r4 = st.columns([0.35, 0.30, 0.15, 0.20])
-        r1.write(f"**{name}**")
-        r2.write(f"`{violation}`")
-        r3.write(f"**{total}x**")
-        r4.write(trend)
+        status = ("Coaching Needed" if total >= 3
+                  else ("Monitor" if total >= 2 else "Low Risk"))
+        rows.append({
+            "Driver": name,
+            "Top Violation": violation,
+            "Events": total,
+            "Status": status,
+        })
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True, hide_index=True)
 else:
     st.info("No driver-identified events in this period.")
 
 st.write("")
 
 # =====================================================================
-#  7 ─ ACTIONS & RESULTS
+#  7 ─ ACTIONS & RESULTS  (Fix #2: CURATED label)
 # =====================================================================
 
-st.markdown('<div class="section-hdr">✅ Actions & Results</div>',
-            unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-hdr">✅ Actions & Results'
+    ' <span class="manual-tag">CURATED</span></div>',
+    unsafe_allow_html=True)
 
 with st.expander("John Smith — Speeding Coaching"):
     st.write("**Scheduled:** 2/19 &nbsp;|&nbsp; **Follow-up:** 2/26")
@@ -500,10 +618,14 @@ st.write("")
 
 # =====================================================================
 #  8 ─ CASING YARDS BREAKDOWN  (ALL 7)
+#      Fix #7: Changed emoji from 🏭 (was duplicate of old section 4) to 📍
+#      Fix #2: YARD_BASELINE labeled as MANUAL
 # =====================================================================
 
-st.markdown('<div class="section-hdr">🏭 Casing Yards Breakdown</div>',
-            unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-hdr">📍 Casing Yards Breakdown'
+    ' <span class="manual-tag">BASELINE: MANUAL</span></div>',
+    unsafe_allow_html=True)
 
 YARD_ORDER = ["Midland", "Bryan", "Kilgore", "Hobbs",
               "Jourdanton", "Levelland", "Barstow"]
@@ -549,10 +671,12 @@ st.write("")
 
 # =====================================================================
 #  9 ─ OVERALL INSIGHTS (live data)
+#      Fix #8: Chart margins fixed (l=40, r=20 instead of 0)
 # =====================================================================
 
-st.markdown('<div class="section-hdr">📈 Overall Insights — Live Data</div>',
-            unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-hdr">📈 Overall Insights — Live Data</div>',
+    unsafe_allow_html=True)
 
 ins_left, ins_right = st.columns(2)
 
@@ -587,7 +711,7 @@ with ins_right:
         ))
         fig.update_layout(
             height=340,
-            margin=dict(l=10, r=10, t=10, b=10),
+            margin=dict(l=20, r=20, t=20, b=20),
             showlegend=False,
             font=dict(size=11),
         )
@@ -595,7 +719,7 @@ with ins_right:
 
 st.write("")
 
-# ── Events by day bar chart ──
+# ── Events by day bar chart  (Fix #8: margins l=40, r=20) ──
 by_day = motive["by_day"]
 if by_day:
     st.markdown("**Motive Events by Day**")
@@ -609,15 +733,13 @@ if by_day:
     ))
     fig.update_layout(
         xaxis_title="Date", yaxis_title="Events",
-        height=300, margin=dict(l=0, r=0, t=10, b=0),
+        height=300, margin=dict(l=40, r=20, t=20, b=40),
     )
     st.plotly_chart(fig, use_container_width=True)
 
-# ── Observations by day ──
+# ── Observations by day  (Fix #8: margins l=40, r=20) ──
 obs_daily = Counter()
 for item in observations["items"]:
-    # Flat format: "Date" is a string like "2026-02-09 16:51:54"
-    # Legacy format: "created" is epoch-ms
     date_str = item.get("Date", "")
     if date_str and isinstance(date_str, str) and len(date_str) >= 10:
         obs_daily[date_str[:10]] += 1
@@ -638,7 +760,7 @@ if obs_daily:
     ))
     fig.update_layout(
         xaxis_title="Date", yaxis_title="Observations",
-        height=300, margin=dict(l=0, r=0, t=10, b=0),
+        height=300, margin=dict(l=40, r=20, t=20, b=40),
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -648,13 +770,6 @@ if obs_daily:
 # =====================================================================
 
 st.divider()
-
-fetched_raw = motive.get("fetched_at") or incidents.get("fetched_at") or ""
-try:
-    fetched_dt = datetime.fromisoformat(fetched_raw)
-    fetched_str = fetched_dt.strftime("%b %d, %Y at %I:%M %p")
-except Exception:
-    fetched_str = fetched_raw or "—"
 
 st.markdown(
     f'<div class="footer-text">'
