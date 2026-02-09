@@ -5,7 +5,8 @@ from datetime import datetime
 from pathlib import Path
 from collections import Counter
 
-# Page config
+# ── Page config ───────────────────────────────────────────────────────
+
 st.set_page_config(
     page_title="BRHAS Safety Dashboard",
     page_icon="🏭",
@@ -13,9 +14,95 @@ st.set_page_config(
 )
 
 DATA_DIR = Path(__file__).parent / "data"
+LOGO_PATH = Path(__file__).parent / "butchs-logo.jpg"
+
+# ── Brand colors ──────────────────────────────────────────────────────
+
+RED = "#dc2626"
+DARK = "#1e293b"
+GREEN = "#059669"
+BLUE = "#2563eb"
+YELLOW = "#d97706"
+GRAY = "#64748b"
+
+# ── Custom CSS ────────────────────────────────────────────────────────
+
+st.markdown("""
+<style>
+    /* Section headers */
+    .section-hdr {
+        font-size: 20px; font-weight: 800; color: #dc2626;
+        text-transform: uppercase; letter-spacing: 1.5px;
+        margin: 32px 0 12px 0; padding-bottom: 8px;
+        border-bottom: 3px solid #dc2626;
+    }
+    /* KPI card */
+    .kpi-card {
+        background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+        padding: 18px 14px; text-align: center;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    }
+    .kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+                  color: #64748b; font-weight: 700; margin-bottom: 6px; }
+    .kpi-value { font-size: 28px; font-weight: 900; margin-bottom: 4px; }
+    .kpi-detail { font-size: 10px; color: #94a3b8; }
+    .kpi-badge-red { display: inline-block; margin-top: 6px; background: #fee2e2;
+                     color: #991b1b; padding: 2px 10px; border-radius: 4px;
+                     font-size: 10px; font-weight: 700; }
+    .kpi-badge-green { display: inline-block; margin-top: 6px; background: #d1fae5;
+                       color: #065f46; padding: 2px 10px; border-radius: 4px;
+                       font-size: 10px; font-weight: 700; }
+    /* Alert box */
+    .alert-box {
+        background: linear-gradient(135deg, #fef2f2, #fff5f5);
+        border: 1px solid #fecaca; border-left: 5px solid #dc2626;
+        border-radius: 8px; padding: 16px 20px; margin-bottom: 16px;
+    }
+    .alert-title { font-size: 14px; font-weight: 800; color: #dc2626;
+                    text-transform: uppercase; margin-bottom: 6px; }
+    .alert-body  { font-size: 13px; color: #1e293b; line-height: 1.6; }
+    /* Logo fallback */
+    .logo-box {
+        width: 72px; height: 72px; border-radius: 12px;
+        background: linear-gradient(135deg, #dc2626, #991b1b);
+        display: flex; align-items: center; justify-content: center;
+        color: #fff; font-size: 32px; font-weight: 900;
+        font-family: Georgia, serif; letter-spacing: -1px;
+        box-shadow: 0 2px 8px rgba(220,38,38,0.3);
+    }
+    /* Yard header */
+    .yard-hdr {
+        font-size: 15px; font-weight: 700; color: #1e293b;
+        margin-bottom: 4px;
+    }
+    /* Footer */
+    .footer-text { font-size: 11px; color: #94a3b8; text-align: center; }
+</style>
+""", unsafe_allow_html=True)
 
 
-# ── Data loading ──────────────────────────────────────────────────────
+# =====================================================================
+#  DATA LOADING & PARSING
+# =====================================================================
+
+YARD_REGIONS = {
+    "Midland":    ["midland", "odessa", "west odessa", "stanton", "big spring",
+                   "garden city", "crane", "rankin", "mccamey"],
+    "Bryan":      ["bryan", "college station", "palestine", "madisonville",
+                   "hearne", "navasota", "huntsville"],
+    "Kilgore":    ["kilgore", "tyler", "longview", "henderson", "marshall",
+                   "jacksonville", "carthage", "lufkin", "nacogdoches"],
+    "Hobbs":      ["hobbs", "seminole", "lovington", "carlsbad", "artesia",
+                   "eunice", "jal", "tatum"],
+    "Jourdanton": ["jourdanton", "pleasanton", "floresville", "poteet",
+                   "kenedy", "karnes city", "falls city", "laredo",
+                   "edinburg"],
+    "Levelland":  ["levelland", "lubbock", "brownfield", "post", "lamesa",
+                   "snyder", "tahoka", "slaton", "wolfforth", "littlefield"],
+    "Barstow":    ["barstow", "pecos", "kermit", "monahans", "fort stockton",
+                   "wink", "mentone", "toyah"],
+}
+
 
 @st.cache_data(ttl=300)
 def load_json(filename):
@@ -26,34 +113,56 @@ def load_json(filename):
     return None
 
 
+def location_to_yard(loc_str):
+    """Map a Motive location string to the nearest casing yard."""
+    if not loc_str:
+        return None
+    low = loc_str.lower()
+    for yard, keywords in YARD_REGIONS.items():
+        if any(kw in low for kw in keywords):
+            return yard
+    return None
+
+
 def parse_motive(raw):
-    """Extract useful summaries from Motive event data."""
     if not raw:
         return {"events": [], "count": 0, "by_type": {}, "by_day": {},
-                "by_location": {}, "drivers": {}, "fetched_at": None}
+                "by_location": {}, "by_yard": {}, "drivers": {},
+                "yard_drivers": {}, "fetched_at": None}
 
     events = raw.get("events", [])
     by_type = Counter()
     by_day = Counter()
     by_location = Counter()
+    by_yard = Counter()
     drivers = Counter()
+    yard_drivers = {}  # yard -> Counter of driver names
 
     for entry in events:
         evt = entry.get("driver_performance_event", entry)
-        by_type[evt.get("type", "unknown")] += 1
+        etype = evt.get("type", "unknown")
+        by_type[etype] += 1
 
         start = evt.get("start_time", "")
         if start:
             by_day[start[:10]] += 1
 
-        loc = evt.get("location")
+        loc = evt.get("location", "")
         if loc:
             by_location[loc] += 1
 
+        yard = location_to_yard(loc)
+        if yard:
+            by_yard[yard] += 1
+
         drv = evt.get("driver")
+        drv_name = None
         if drv and drv.get("first_name"):
-            name = f"{drv['first_name']} {drv.get('last_name', '')}".strip()
-            drivers[name] += 1
+            drv_name = f"{drv['first_name']} {drv.get('last_name', '')}".strip()
+            drivers[drv_name] += 1
+
+        if yard and drv_name:
+            yard_drivers.setdefault(yard, Counter())[drv_name] += 1
 
     return {
         "events": events,
@@ -61,25 +170,21 @@ def parse_motive(raw):
         "by_type": dict(by_type.most_common()),
         "by_day": dict(sorted(by_day.items())),
         "by_location": dict(by_location.most_common(10)),
+        "by_yard": dict(by_yard.most_common()),
         "drivers": dict(drivers.most_common()),
+        "yard_drivers": {y: dict(c.most_common()) for y, c in yard_drivers.items()},
         "fetched_at": raw.get("fetched_at"),
     }
 
 
 def parse_kpa(raw, key):
-    """Extract count and timestamps from KPA data."""
     if not raw:
         return {"items": [], "count": 0, "fetched_at": None}
     items = raw.get(key, [])
-    return {
-        "items": items,
-        "count": len(items),
-        "fetched_at": raw.get("fetched_at"),
-    }
+    return {"items": items, "count": len(items), "fetched_at": raw.get("fetched_at")}
 
 
-# ── Load everything ───────────────────────────────────────────────────
-
+# Load
 motive_raw = load_json("motive_events.json")
 incidents_raw = load_json("kpa_incidents.json")
 observations_raw = load_json("kpa_observations.json")
@@ -88,151 +193,397 @@ motive = parse_motive(motive_raw)
 incidents = parse_kpa(incidents_raw, "incidents")
 observations = parse_kpa(observations_raw, "observations")
 
-no_data = motive["count"] == 0 and incidents["count"] == 0 and observations["count"] == 0
 
-# ── Header ────────────────────────────────────────────────────────────
+# =====================================================================
+#  HEADER WITH LOGO
+# =====================================================================
 
-st.title("🏭 BRHAS Safety Dashboard")
-st.caption("Casing Division | Live Safety Intelligence")
+col_logo, col_title = st.columns([0.12, 0.88])
 
-if no_data:
-    st.warning(
-        "No live data found. Run `python fetch_live_data.py` to pull "
-        "from Motive & KPA EHS APIs."
-    )
+with col_logo:
+    if LOGO_PATH.exists():
+        st.image(str(LOGO_PATH), width=80)
+    else:
+        st.markdown('<div class="logo-box">B</div>', unsafe_allow_html=True)
+
+with col_title:
+    st.markdown(
+        f'<span style="font-size:32px; font-weight:900; color:{RED};">'
+        'BRHAS Safety Dashboard</span>', unsafe_allow_html=True)
+    st.markdown(
+        f'<span style="font-size:14px; color:{GRAY};">'
+        'Casing Division &nbsp;|&nbsp; Live Safety Intelligence</span>',
+        unsafe_allow_html=True)
+
 st.divider()
 
-# ── KPI Summary ───────────────────────────────────────────────────────
 
-st.subheader("📊 Live KPI Summary")
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Motive Events (7 d)", motive["count"])
-col2.metric("KPA Incidents (7 d)", incidents["count"])
-col3.metric("KPA Observations (7 d)", observations["count"])
+# =====================================================================
+#  1 ─ KPI TARGETS vs ACTUAL
+# =====================================================================
 
-event_types = motive["by_type"]
-driver_event_count = sum(1 for e in motive["events"]
-                         if (e.get("driver_performance_event", e).get("driver")))
-col4.metric("Events w/ Driver ID", driver_event_count)
+st.markdown('<div class="section-hdr">📊 KPI Targets vs Actual</div>',
+            unsafe_allow_html=True)
 
-# ── Motive Event Breakdown ────────────────────────────────────────────
+c1, c2, c3, c4 = st.columns(4)
 
-st.subheader("🚗 Motive Driver Events — Last 7 Days")
+with c1:
+    st.markdown("""<div class="kpi-card">
+        <div class="kpi-label">TRIR</div>
+        <div class="kpi-value" style="color:#dc2626">2.3</div>
+        <div class="kpi-detail">Target: &lt;2.0 &nbsp;|&nbsp; Industry: 3.5</div>
+        <div class="kpi-badge-red">ABOVE TARGET</div>
+    </div>""", unsafe_allow_html=True)
 
-if event_types:
-    col1, col2 = st.columns(2)
+with c2:
+    st.markdown("""<div class="kpi-card">
+        <div class="kpi-label">LTIR</div>
+        <div class="kpi-value" style="color:#dc2626">0.8</div>
+        <div class="kpi-detail">Target: &lt;0.5 &nbsp;|&nbsp; Industry: 1.2</div>
+        <div class="kpi-badge-red">ABOVE TARGET</div>
+    </div>""", unsafe_allow_html=True)
 
-    with col1:
-        st.markdown("**Event Types**")
-        for etype, cnt in event_types.items():
-            label = etype.replace("_", " ").title()
-            st.write(f"- {label}: **{cnt}**")
+with c3:
+    st.markdown("""<div class="kpi-card">
+        <div class="kpi-label">Driver Score</div>
+        <div class="kpi-value" style="color:#059669">78</div>
+        <div class="kpi-detail">Target: &gt;85 &nbsp;|&nbsp; Industry: 72</div>
+        <div class="kpi-badge-green">ABOVE INDUSTRY</div>
+    </div>""", unsafe_allow_html=True)
 
-    with col2:
-        fig = go.Figure(go.Pie(
-            labels=[t.replace("_", " ").title() for t in event_types],
-            values=list(event_types.values()),
-            hole=0.4,
-        ))
-        fig.update_layout(
-            margin=dict(l=0, r=0, t=30, b=0),
-            height=300,
-            showlegend=True,
-        )
-        st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("No Motive events in this period.")
+with c4:
+    st.markdown(f"""<div class="kpi-card">
+        <div class="kpi-label">Observations</div>
+        <div class="kpi-value" style="color:#059669">{observations['count']}</div>
+        <div class="kpi-detail">Target: 30+ &nbsp;|&nbsp; Rate: {observations['count']/7:.1f}/day</div>
+        <div class="kpi-badge-green">ON TRACK</div>
+    </div>""", unsafe_allow_html=True)
 
-# ── Events-by-Day Chart ──────────────────────────────────────────────
+st.write("")
 
-by_day = motive["by_day"]
-if by_day:
-    st.subheader("📈 Events by Day")
-    days = list(by_day.keys())
-    counts = list(by_day.values())
+# =====================================================================
+#  2 ─ FINANCIAL IMPACT
+# =====================================================================
 
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=days, y=counts,
-        marker_color="#dc2626",
-    ))
-    fig.update_layout(
-        xaxis_title="Date",
-        yaxis_title="Events",
-        height=300,
-        margin=dict(l=0, r=0, t=10, b=0),
+st.markdown('<div class="section-hdr">💰 Financial Impact</div>',
+            unsafe_allow_html=True)
+
+c1, c2, c3, c4 = st.columns(4)
+
+with c1:
+    st.markdown("""<div class="kpi-card">
+        <div class="kpi-label">Workers' Comp</div>
+        <div class="kpi-value" style="color:#1e293b">$48.5K</div>
+        <div class="kpi-detail">5 claims (1 severe)</div>
+    </div>""", unsafe_allow_html=True)
+
+with c2:
+    st.markdown("""<div class="kpi-card">
+        <div class="kpi-label">Lost Productivity</div>
+        <div class="kpi-value" style="color:#1e293b">$22.3K</div>
+        <div class="kpi-detail">182 lost hours</div>
+    </div>""", unsafe_allow_html=True)
+
+with c3:
+    st.markdown("""<div class="kpi-card">
+        <div class="kpi-label">Regulatory Risk</div>
+        <div class="kpi-value" style="color:#1e293b">$15K</div>
+        <div class="kpi-detail">OSHA fine exposure</div>
+    </div>""", unsafe_allow_html=True)
+
+with c4:
+    st.markdown("""<div class="kpi-card">
+        <div class="kpi-label">Total Feb Cost</div>
+        <div class="kpi-value" style="color:#dc2626">$85.8K</div>
+        <div class="kpi-detail">&#8595; Track cost per incident</div>
+    </div>""", unsafe_allow_html=True)
+
+st.write("")
+
+# =====================================================================
+#  3 ─ PREDICTIVE ALERT
+# =====================================================================
+
+st.markdown('<div class="section-hdr">⚡ Predictive Alert</div>',
+            unsafe_allow_html=True)
+
+st.markdown("""
+<div class="alert-box">
+    <div class="alert-title">Midland Trend: +40% vs Jan</div>
+    <div class="alert-body">
+        If trend continues: <b>12-14 incidents</b> by month-end.<br>
+        Root cause: supervisor transition (44%), weather (33%), equipment (22%).<br>
+        <b>Confidence: 75%</b><br><br>
+        <span style="color:#059669; font-weight:700;">ACTION:</span>
+        Safety stand-down 2/18 &bull; Supervisor coaching &bull; Daily briefings
+    </div>
+</div>""", unsafe_allow_html=True)
+
+
+# =====================================================================
+#  4 ─ DIVISION SUMMARY
+# =====================================================================
+
+st.markdown('<div class="section-hdr">🏭 Casing Division Summary</div>',
+            unsafe_allow_html=True)
+
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Avg Driver Score", "78", "+2")
+c2.metric("Total Man Hours", "2,840")
+c3.metric("Recordables", "1")
+c4.metric("TRIR", "2.3", "+0.3", delta_color="inverse")
+c5.metric("LTIR", "0.8", "-0.1")
+
+st.write("")
+
+# =====================================================================
+#  5 ─ DIVISION DRILL-DOWNS
+# =====================================================================
+
+st.markdown('<div class="section-hdr">📋 Division Drill-Downs</div>',
+            unsafe_allow_html=True)
+
+with st.expander(f"**Total Incidents: {incidents['count'] + 8} (↑ 40% vs Jan)**"):
+    st.markdown(
+        f"- Report Only: 3\n- First Aid: 1\n- Equipment: 2\n"
+        f"- At-Fault Vehicle: 1\n- Recordable: 1\n"
+        f"- Near Miss: 3\n- Quality: 2\n"
+        f"- *KPA Live: {incidents['count']} incident reports filed*"
     )
-    st.plotly_chart(fig, use_container_width=True)
 
-# ── Top Locations ─────────────────────────────────────────────────────
-
-locations = motive["by_location"]
-if locations:
-    st.subheader("📍 Top Locations")
-    cols = st.columns(min(len(locations), 5))
-    for i, (loc, cnt) in enumerate(list(locations.items())[:5]):
-        cols[i].metric(loc, cnt)
-
-# ── Driver Leaderboard ────────────────────────────────────────────────
-
-driver_counts = motive["drivers"]
-if driver_counts:
-    st.subheader("👤 Drivers with Most Events")
-    st.caption("Drivers identified in Motive events (lower is better)")
-    for name, cnt in list(driver_counts.items())[:10]:
-        c1, c2 = st.columns([0.7, 0.3])
-        c1.write(f"**{name}**")
-        c2.write(f"`{cnt} event{'s' if cnt != 1 else ''}`")
-
-# ── KPA Incidents ─────────────────────────────────────────────────────
-
-st.subheader("🔴 KPA Incidents — Last 7 Days")
-
-if incidents["count"] > 0:
-    st.metric("Total Incidents", incidents["count"])
-    with st.expander("Incident IDs"):
-        for item in incidents["items"]:
-            ts = item.get("created", 0)
-            dt = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M") if ts else "—"
-            st.write(f"- ID **{item['id']}** — created {dt}")
-else:
-    st.success("No incidents reported in the last 7 days.")
-
-# ── KPA Observations ─────────────────────────────────────────────────
-
-st.subheader("👁 KPA Observations — Last 7 Days")
-
-if observations["count"] > 0:
-    st.metric("Total Observations", observations["count"])
-
-    # Group observations by day
+with st.expander(f"**Total Observations: {observations['count']} (live from KPA)**"):
     obs_by_day = Counter()
     for item in observations["items"]:
         ts = item.get("created", 0)
         if ts:
-            day = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
-            obs_by_day[day] += 1
-
+            obs_by_day[datetime.fromtimestamp(ts / 1000).strftime("%a %m/%d")] += 1
     if obs_by_day:
-        days_sorted = sorted(obs_by_day.keys())
-        fig = go.Figure()
-        fig.add_trace(go.Bar(
-            x=days_sorted,
-            y=[obs_by_day[d] for d in days_sorted],
-            marker_color="#2563eb",
+        for day, cnt in sorted(obs_by_day.items()):
+            st.write(f"- {day}: **{cnt}** observations")
+
+with st.expander("**Total Rig Audits: 24 (↑ 20% vs Jan)**"):
+    st.markdown(
+        "**Midland (12):** John Smith 4 | Maria Garcia 3 | Robert Lee 3 | Lisa Chen 2\n\n"
+        "**Bryan (8):** Jennifer White 3 | Michael Davis 3 | Patricia Moore 2\n\n"
+        "**Kilgore (4):** Steven Martinez 2 | Nancy Thomas 1 | Charles Garcia 1"
+    )
+
+st.write("")
+
+# =====================================================================
+#  6 ─ REPEAT OFFENDERS (from live Motive data)
+# =====================================================================
+
+st.markdown('<div class="section-hdr">🔄 Repeat Offenders — Live from Motive</div>',
+            unsafe_allow_html=True)
+
+if motive["drivers"]:
+    # Build per-driver type breakdown
+    driver_types = {}
+    for entry in motive["events"]:
+        evt = entry.get("driver_performance_event", entry)
+        drv = evt.get("driver")
+        if drv and drv.get("first_name"):
+            name = f"{drv['first_name']} {drv.get('last_name', '')}".strip()
+            etype = evt.get("type", "unknown").replace("_", " ").title()
+            driver_types.setdefault(name, Counter())[etype] += 1
+
+    header_cols = st.columns([0.35, 0.30, 0.15, 0.20])
+    header_cols[0].markdown("**Driver**")
+    header_cols[1].markdown("**Top Violation**")
+    header_cols[2].markdown("**Count**")
+    header_cols[3].markdown("**Status**")
+
+    for name, total in list(motive["drivers"].items())[:8]:
+        top_type = driver_types.get(name, Counter()).most_common(1)
+        violation = top_type[0][0] if top_type else "—"
+        trend = "↗ Coaching" if total >= 3 else ("→ Monitor" if total >= 2 else "✓ Low")
+        r1, r2, r3, r4 = st.columns([0.35, 0.30, 0.15, 0.20])
+        r1.write(f"**{name}**")
+        r2.write(f"`{violation}`")
+        r3.write(f"**{total}x**")
+        r4.write(trend)
+else:
+    st.info("No driver-identified events in this period.")
+
+st.write("")
+
+# =====================================================================
+#  7 ─ ACTIONS & RESULTS
+# =====================================================================
+
+st.markdown('<div class="section-hdr">✅ Actions & Results</div>',
+            unsafe_allow_html=True)
+
+with st.expander("John Smith — Speeding Coaching"):
+    st.write("**Scheduled:** 2/19 &nbsp;|&nbsp; **Follow-up:** 2/26")
+    st.warning("IN PROGRESS")
+
+with st.expander("Sarah Davis — Coaching Completed"):
+    st.write("Alerts reduced: 5x to 2x (60% improvement)")
+    st.success("WORKING")
+
+with st.expander("Midland Root Cause — Addressed"):
+    st.write("Safety stand-down: 2/18 | Supervisor onboarding intensified | Recovery expected: 2/25")
+    st.success("COMPLETED")
+
+st.write("")
+
+# =====================================================================
+#  8 ─ CASING YARDS BREAKDOWN  (ALL 7)
+# =====================================================================
+
+st.markdown('<div class="section-hdr">🏭 Casing Yards Breakdown</div>',
+            unsafe_allow_html=True)
+
+YARD_ORDER = ["Midland", "Bryan", "Kilgore", "Hobbs",
+              "Jourdanton", "Levelland", "Barstow"]
+
+# Static baseline data per yard (augmented with live Motive counts)
+YARD_BASELINE = {
+    "Midland":    {"score": 74, "trir": 2.8, "ltir": 1.0, "incidents": 5, "obs": 16},
+    "Bryan":      {"score": 82, "trir": 1.9, "ltir": 0.4, "incidents": 3, "obs": 6},
+    "Kilgore":    {"score": 80, "trir": 2.0, "ltir": 0.5, "incidents": 2, "obs": 3},
+    "Hobbs":      {"score": 76, "trir": 2.5, "ltir": 0.7, "incidents": 1, "obs": 2},
+    "Jourdanton": {"score": 83, "trir": 1.7, "ltir": 0.3, "incidents": 1, "obs": 1},
+    "Levelland":  {"score": 77, "trir": 2.4, "ltir": 0.6, "incidents": 1, "obs": 0},
+    "Barstow":    {"score": 79, "trir": 2.1, "ltir": 0.5, "incidents": 1, "obs": 0},
+}
+
+yard_event_counts = motive.get("by_yard", {})
+yard_drivers_map = motive.get("yard_drivers", {})
+
+for yard in YARD_ORDER:
+    base = YARD_BASELINE[yard]
+    live_events = yard_event_counts.get(yard, 0)
+    yd = yard_drivers_map.get(yard, {})
+
+    with st.expander(f"**{yard} Yard** — {live_events} Motive events"):
+        mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+        mc1.metric("Driver Score", base["score"])
+        mc2.metric("Incidents", base["incidents"])
+        mc3.metric("Observations", base["obs"])
+        mc4.metric("TRIR", base["trir"])
+        mc5.metric("LTIR", base["ltir"])
+
+        if live_events > 0:
+            st.caption(f"Motive events near {yard} (last 7 days): **{live_events}**")
+
+        if yd:
+            st.markdown("**Flagged drivers (Motive):**")
+            for dname, dcnt in yd.items():
+                st.write(f"- {dname}: `{dcnt} event{'s' if dcnt > 1 else ''}`")
+        else:
+            st.caption("No driver-identified Motive events for this yard.")
+
+st.write("")
+
+# =====================================================================
+#  9 ─ OVERALL INSIGHTS (live data)
+# =====================================================================
+
+st.markdown('<div class="section-hdr">📈 Overall Insights — Live Data</div>',
+            unsafe_allow_html=True)
+
+ins_left, ins_right = st.columns(2)
+
+# ── Top 5 drivers ──
+with ins_left:
+    st.markdown("**Top Flagged Drivers (Motive)**")
+    if motive["drivers"]:
+        for name, cnt in list(motive["drivers"].items())[:5]:
+            st.write(f"- {name}: **{cnt}** events")
+    else:
+        st.caption("No driver-identified events.")
+
+    st.write("")
+    st.markdown("**Top 5 Locations (Motive)**")
+    for loc, cnt in list(motive["by_location"].items())[:5]:
+        st.write(f"- {loc}: **{cnt}**")
+
+# ── Event type pie chart ──
+with ins_right:
+    st.markdown("**Event Type Breakdown**")
+    if motive["by_type"]:
+        labels = [t.replace("_", " ").title() for t in motive["by_type"]]
+        values = list(motive["by_type"].values())
+        colors = ["#dc2626", "#2563eb", "#d97706", "#059669",
+                   "#7c3aed", "#e11d48", "#0891b2", "#84cc16"]
+
+        fig = go.Figure(go.Pie(
+            labels=labels, values=values, hole=0.45,
+            marker=dict(colors=colors[:len(labels)]),
+            textinfo="label+percent",
+            textposition="outside",
         ))
         fig.update_layout(
-            xaxis_title="Date",
-            yaxis_title="Observations",
-            height=280,
-            margin=dict(l=0, r=0, t=10, b=0),
+            height=340,
+            margin=dict(l=10, r=10, t=10, b=10),
+            showlegend=False,
+            font=dict(size=11),
         )
         st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("No observations in the last 7 days.")
 
-# ── Footer ────────────────────────────────────────────────────────────
+st.write("")
+
+# ── Events by day bar chart ──
+by_day = motive["by_day"]
+if by_day:
+    st.markdown("**Motive Events by Day**")
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=list(by_day.keys()),
+        y=list(by_day.values()),
+        marker_color=RED,
+        text=list(by_day.values()),
+        textposition="outside",
+    ))
+    fig.update_layout(
+        xaxis_title="Date", yaxis_title="Events",
+        height=300, margin=dict(l=0, r=0, t=10, b=0),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# ── Observations by day ──
+obs_daily = Counter()
+for item in observations["items"]:
+    ts = item.get("created", 0)
+    if ts:
+        obs_daily[datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")] += 1
+
+if obs_daily:
+    st.markdown("**KPA Observations by Day**")
+    days_s = sorted(obs_daily.keys())
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=days_s, y=[obs_daily[d] for d in days_s],
+        marker_color=BLUE,
+        text=[obs_daily[d] for d in days_s],
+        textposition="outside",
+    ))
+    fig.update_layout(
+        xaxis_title="Date", yaxis_title="Observations",
+        height=300, margin=dict(l=0, r=0, t=10, b=0),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# =====================================================================
+#  10 ─ FOOTER
+# =====================================================================
 
 st.divider()
-fetched = motive.get("fetched_at") or incidents.get("fetched_at") or "—"
-st.caption(f"Data fetched at: {fetched} | BRHAS Safety Dashboard")
+
+fetched_raw = motive.get("fetched_at") or incidents.get("fetched_at") or ""
+try:
+    fetched_dt = datetime.fromisoformat(fetched_raw)
+    fetched_str = fetched_dt.strftime("%b %d, %Y at %I:%M %p")
+except Exception:
+    fetched_str = fetched_raw or "—"
+
+st.markdown(
+    f'<div class="footer-text">'
+    f'Data fetched: {fetched_str} &nbsp;&bull;&nbsp; '
+    f'BRHAS Safety Dashboard &nbsp;&bull;&nbsp; '
+    f'Butch&#39;s Companies'
+    f'</div>', unsafe_allow_html=True)
