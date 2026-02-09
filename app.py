@@ -1,6 +1,9 @@
 import streamlit as st
+import json
 import plotly.graph_objects as go
 from datetime import datetime
+from pathlib import Path
+from collections import Counter
 
 # Page config
 st.set_page_config(
@@ -9,131 +12,227 @@ st.set_page_config(
     layout="wide",
 )
 
-# Header
+DATA_DIR = Path(__file__).parent / "data"
+
+
+# ── Data loading ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=300)
+def load_json(filename):
+    path = DATA_DIR / filename
+    if path.exists():
+        with open(path) as f:
+            return json.load(f)
+    return None
+
+
+def parse_motive(raw):
+    """Extract useful summaries from Motive event data."""
+    if not raw:
+        return {"events": [], "count": 0, "by_type": {}, "by_day": {},
+                "by_location": {}, "drivers": {}, "fetched_at": None}
+
+    events = raw.get("events", [])
+    by_type = Counter()
+    by_day = Counter()
+    by_location = Counter()
+    drivers = Counter()
+
+    for entry in events:
+        evt = entry.get("driver_performance_event", entry)
+        by_type[evt.get("type", "unknown")] += 1
+
+        start = evt.get("start_time", "")
+        if start:
+            by_day[start[:10]] += 1
+
+        loc = evt.get("location")
+        if loc:
+            by_location[loc] += 1
+
+        drv = evt.get("driver")
+        if drv and drv.get("first_name"):
+            name = f"{drv['first_name']} {drv.get('last_name', '')}".strip()
+            drivers[name] += 1
+
+    return {
+        "events": events,
+        "count": len(events),
+        "by_type": dict(by_type.most_common()),
+        "by_day": dict(sorted(by_day.items())),
+        "by_location": dict(by_location.most_common(10)),
+        "drivers": dict(drivers.most_common()),
+        "fetched_at": raw.get("fetched_at"),
+    }
+
+
+def parse_kpa(raw, key):
+    """Extract count and timestamps from KPA data."""
+    if not raw:
+        return {"items": [], "count": 0, "fetched_at": None}
+    items = raw.get(key, [])
+    return {
+        "items": items,
+        "count": len(items),
+        "fetched_at": raw.get("fetched_at"),
+    }
+
+
+# ── Load everything ───────────────────────────────────────────────────
+
+motive_raw = load_json("motive_events.json")
+incidents_raw = load_json("kpa_incidents.json")
+observations_raw = load_json("kpa_observations.json")
+
+motive = parse_motive(motive_raw)
+incidents = parse_kpa(incidents_raw, "incidents")
+observations = parse_kpa(observations_raw, "observations")
+
+no_data = motive["count"] == 0 and incidents["count"] == 0 and observations["count"] == 0
+
+# ── Header ────────────────────────────────────────────────────────────
+
 st.title("🏭 BRHAS Safety Dashboard")
 st.caption("Casing Division | Live Safety Intelligence")
+
+if no_data:
+    st.warning(
+        "No live data found. Run `python fetch_live_data.py` to pull "
+        "from Motive & KPA EHS APIs."
+    )
 st.divider()
 
-# --- KPI Targets vs Actual ---
-st.subheader("📊 KPI Targets vs Actual")
+# ── KPI Summary ───────────────────────────────────────────────────────
+
+st.subheader("📊 Live KPI Summary")
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("TRIR", "2.3", "0.3", delta_color="inverse")
-col2.metric("LTIR", "0.8", "-0.1")
-col3.metric("Avg Driver Score", "78", "+2")
-col4.metric("Observations", "28", "0")
+col1.metric("Motive Events (7 d)", motive["count"])
+col2.metric("KPA Incidents (7 d)", incidents["count"])
+col3.metric("KPA Observations (7 d)", observations["count"])
 
-# --- Financial Impact ---
-st.subheader("💰 Financial Impact")
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Workers' Comp", "$48.5K", "5 claims")
-col2.metric("Lost Productivity", "$22.3K", "182 hrs lost")
-col3.metric("Regulatory Risk", "$15K", "OSHA exposure")
-col4.metric("Total Feb Cost", "$85.8K")
+event_types = motive["by_type"]
+driver_event_count = sum(1 for e in motive["events"]
+                         if (e.get("driver_performance_event", e).get("driver")))
+col4.metric("Events w/ Driver ID", driver_event_count)
 
-# --- Predictive Alert ---
-st.subheader("⚡ Predictive Alert")
-st.warning(
-    "**Midland Trend: +40% vs Jan** — If trend continues: 12-14 incidents by month-end. "
-    "Root cause: supervisor transition (44%), weather (33%), equipment (22%). "
-    "Confidence: 75%. "
-    "Action: Safety stand-down 2/18, supervisor coaching, daily briefings."
-)
+# ── Motive Event Breakdown ────────────────────────────────────────────
 
-# --- Casing Division Summary ---
-st.subheader("🏭 Casing Division Summary")
-col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Avg Driver Score", "78", "↑ +2")
-col2.metric("Total Man Hours", "2,840")
-col3.metric("Recordables", "1")
-col4.metric("TRIR", "2.3", "↑ +0.3")
-col5.metric("LTIR", "0.8", "↓ -0.1")
+st.subheader("🚗 Motive Driver Events — Last 7 Days")
 
-# --- Drill-Downs ---
-st.subheader("📋 Division Drill-Downs")
+if event_types:
+    col1, col2 = st.columns(2)
 
-with st.expander("Total Incidents: 14 (↑ 40% vs Jan)"):
-    st.markdown(
-        "- Report Only: 3\n- First Aid: 1\n- Equipment: 2\n"
-        "- At-Fault Vehicle: 1\n- Recordable: 1\n- Near Miss: 3\n- Quality: 2"
+    with col1:
+        st.markdown("**Event Types**")
+        for etype, cnt in event_types.items():
+            label = etype.replace("_", " ").title()
+            st.write(f"- {label}: **{cnt}**")
+
+    with col2:
+        fig = go.Figure(go.Pie(
+            labels=[t.replace("_", " ").title() for t in event_types],
+            values=list(event_types.values()),
+            hole=0.4,
+        ))
+        fig.update_layout(
+            margin=dict(l=0, r=0, t=30, b=0),
+            height=300,
+            showlegend=True,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("No Motive events in this period.")
+
+# ── Events-by-Day Chart ──────────────────────────────────────────────
+
+by_day = motive["by_day"]
+if by_day:
+    st.subheader("📈 Events by Day")
+    days = list(by_day.keys())
+    counts = list(by_day.values())
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=days, y=counts,
+        marker_color="#dc2626",
+    ))
+    fig.update_layout(
+        xaxis_title="Date",
+        yaxis_title="Events",
+        height=300,
+        margin=dict(l=0, r=0, t=10, b=0),
     )
+    st.plotly_chart(fig, use_container_width=True)
 
-with st.expander("Total Observations: 28 (→ SAME vs Jan)"):
-    st.markdown(
-        "- At-Risk Condition: 8 (Midland 5, Bryan 2, Kilgore 1)\n"
-        "- At-Risk Behavior: 6 (Midland 3, Bryan 2, Kilgore 1)\n"
-        "- Recognition: 5\n- At-Risk Procedure: 4\n- Near Miss: 3\n- Suggestion: 2"
-    )
+# ── Top Locations ─────────────────────────────────────────────────────
 
-with st.expander("Total Rig Audits: 24 (↑ 20% vs Jan)"):
-    st.markdown(
-        "**Midland (12):** John Smith 4 | Maria Garcia 3 | Robert Lee 3 | Lisa Chen 2\n\n"
-        "**Bryan (8):** Jennifer White 3 | Michael Davis 3 | Patricia Moore 2\n\n"
-        "**Kilgore (4):** Steven Martinez 2 | Nancy Thomas 1 | Charles Garcia 1"
-    )
+locations = motive["by_location"]
+if locations:
+    st.subheader("📍 Top Locations")
+    cols = st.columns(min(len(locations), 5))
+    for i, (loc, cnt) in enumerate(list(locations.items())[:5]):
+        cols[i].metric(loc, cnt)
 
-# --- Repeat Offenders ---
-st.subheader("🔄 Repeat Offenders")
-for name, violation, count, trend in [
-    ("John Smith (Midland)", "Speeding", "4x", "↗"),
-    ("Sarah Davis (Bryan)", "Harsh Accel", "3x", "↘"),
-    ("Mike Johnson (Bryan)", "Following Dist", "2x", "→"),
-]:
-    c1, c2, c3, c4 = st.columns([0.4, 0.3, 0.15, 0.15])
-    c1.write(f"**{name}**")
-    c2.write(f"`{violation}`")
-    c3.write(f"**{count}**")
-    c4.write(f"**{trend}**")
+# ── Driver Leaderboard ────────────────────────────────────────────────
 
-# --- Actions & Results ---
-st.subheader("✅ Actions & Results")
+driver_counts = motive["drivers"]
+if driver_counts:
+    st.subheader("👤 Drivers with Most Events")
+    st.caption("Drivers identified in Motive events (lower is better)")
+    for name, cnt in list(driver_counts.items())[:10]:
+        c1, c2 = st.columns([0.7, 0.3])
+        c1.write(f"**{name}**")
+        c2.write(f"`{cnt} event{'s' if cnt != 1 else ''}`")
 
-with st.expander("John Smith — Speeding Coaching"):
-    st.write("**Scheduled:** 2/19 | **Follow-up:** 2/26")
-    st.warning("⏳ IN PROGRESS")
+# ── KPA Incidents ─────────────────────────────────────────────────────
 
-with st.expander("Sarah Davis — Coaching Completed"):
-    st.write("Alerts reduced: 5x → 2x (60% improvement)")
-    st.success("✓ WORKING")
+st.subheader("🔴 KPA Incidents — Last 7 Days")
 
-with st.expander("Midland Root Cause — Addressed"):
-    st.write("Safety stand-down: 2/18 | Supervisor onboarding intensified | Recovery expected: 2/25")
-    st.success("✓ COMPLETED")
+if incidents["count"] > 0:
+    st.metric("Total Incidents", incidents["count"])
+    with st.expander("Incident IDs"):
+        for item in incidents["items"]:
+            ts = item.get("created", 0)
+            dt = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M") if ts else "—"
+            st.write(f"- ID **{item['id']}** — created {dt}")
+else:
+    st.success("No incidents reported in the last 7 days.")
 
-# --- 7-Day Speeding Trend ---
-st.subheader("📈 7-Day Speeding Trend")
+# ── KPA Observations ─────────────────────────────────────────────────
 
-days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-events = [1, 2, 2, 1, 3, 2, 5]
+st.subheader("👁 KPA Observations — Last 7 Days")
 
-fig = go.Figure()
-fig.add_trace(go.Scatter(
-    x=days, y=events,
-    mode="lines+markers",
-    line=dict(color="#dc2626", width=3),
-    marker=dict(size=10, color="#dc2626"),
-))
-fig.update_layout(
-    yaxis_title="Events",
-    hovermode="x unified",
-    height=300,
-    margin=dict(l=0, r=0, t=10, b=0),
-    showlegend=False,
-)
-st.plotly_chart(fig, use_container_width=True)
+if observations["count"] > 0:
+    st.metric("Total Observations", observations["count"])
 
-# --- Driver Scores ---
-col1, col2 = st.columns(2)
+    # Group observations by day
+    obs_by_day = Counter()
+    for item in observations["items"]:
+        ts = item.get("created", 0)
+        if ts:
+            day = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
+            obs_by_day[day] += 1
 
-with col1:
-    st.subheader("⭐ Top Drivers")
-    for name, score in [("James Wilson", 95), ("Maria Garcia", 94), ("Robert Lee", 93)]:
-        st.write(f"{name}: **{score}**")
+    if obs_by_day:
+        days_sorted = sorted(obs_by_day.keys())
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=days_sorted,
+            y=[obs_by_day[d] for d in days_sorted],
+            marker_color="#2563eb",
+        ))
+        fig.update_layout(
+            xaxis_title="Date",
+            yaxis_title="Observations",
+            height=280,
+            margin=dict(l=0, r=0, t=10, b=0),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("No observations in the last 7 days.")
 
-with col2:
-    st.subheader("⚠️ Needs Improvement")
-    for name, score in [("John Smith (Speeding)", 42), ("Tom Wilson (Following)", 55)]:
-        st.write(f"{name}: **{score}**")
+# ── Footer ────────────────────────────────────────────────────────────
 
-# Footer
 st.divider()
-st.caption(f"Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | BRHAS Safety Dashboard")
+fetched = motive.get("fetched_at") or incidents.get("fetched_at") or "—"
+st.caption(f"Data fetched at: {fetched} | BRHAS Safety Dashboard")

@@ -12,8 +12,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 # API Credentials (from environment variables)
-MOTIVE_API_KEY = os.getenv("MOTIVE_API_KEY", "8d3dd502-36c0-47c4-ade3-a1fbbef0c05c")
-KPA_API_TOKEN = os.getenv("KPA_API_TOKEN", "ppd4tH128Jsx3SwUJEjSsBqp0HNEXCxc6")
+MOTIVE_API_KEY = os.getenv("MOTIVE_API_KEY", "")
+KPA_API_TOKEN = os.getenv("KPA_API_TOKEN", "")
 
 # API Endpoints
 MOTIVE_BASE_URL = "https://api.gomotive.com/v1"
