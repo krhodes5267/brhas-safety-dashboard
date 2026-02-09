@@ -55,6 +55,8 @@ YARD_REGIONS = {
 DISTRICT_ALIASES = {"midland yukon": "Midland"}
 CASING_SERVICE_LINES = {"casing"}
 
+CSG_AUDIT_FORM = "CSG - Safety Casing Field Assessment"
+
 # ── Custom CSS ────────────────────────────────────────────────────────
 
 st.markdown("""
@@ -276,10 +278,65 @@ def get_all_kpa_items(raw, key):
     return items
 
 
+def get_all_rig_audits(raw):
+    """Extract CSG - Safety Casing Field Assessment records from observations.
+
+    These have an empty Service Line so they're missed by the Casing filter.
+    We identify them by the Report field and compute a checklist score from
+    the Yes/OK vs No answers in the record.
+    """
+    if not raw:
+        return []
+    PASS_VALUES = {"Yes", "OK"}
+    FAIL_VALUES = {"No"}
+    SKIP_KEYS = {
+        "Report", "Report Number", "Date", "District", "Observer",
+        "Observer Emp#", "Rig", "Audit Type", "Link", "Service Line",
+        "Updated", "Updated Time", "Version", "Latitude", "Longitude",
+        "Temperature", "Wind Speed", "Weather", "Duration (Seconds)",
+        "Parent Report Number", "Parent Link", "Surrogate", "Completed by",
+        "Customer", "Name", "Number of Crew Members Involved",
+        "Date Conducted", "Date Conducted Latitude",
+        "Date Conducted Longitude", "1st Obs", "2nd Obs",
+        "_date", "_district",
+    }
+    audits = []
+    for item in raw.get("observations", []):
+        if item.get("Report") != CSG_AUDIT_FORM:
+            continue
+
+        # Compute checklist score
+        passed = 0
+        failed = 0
+        failed_items = []
+        for k, v in item.items():
+            if k in SKIP_KEYS or not isinstance(v, str):
+                continue
+            if v in PASS_VALUES:
+                passed += 1
+            elif v in FAIL_VALUES:
+                failed += 1
+                failed_items.append(k)
+
+        total = passed + failed
+        score = round(passed / total * 100) if total > 0 else 0
+
+        item["_date"] = parse_event_date(item.get("Date", ""))
+        item["_district"] = normalize_district(item.get("District", ""))
+        item["_score"] = score
+        item["_passed"] = passed
+        item["_failed"] = failed
+        item["_total_checked"] = total
+        item["_failed_items"] = failed_items
+        audits.append(item)
+    return audits
+
+
 # Pre-parse all data
 all_motive = get_all_motive_events()
 all_incidents = get_all_kpa_items(incidents_raw, "incidents")
 all_observations = get_all_kpa_items(observations_raw, "observations")
+all_audits = get_all_rig_audits(observations_raw)
 
 
 # =====================================================================
@@ -437,16 +494,22 @@ observations_filtered = [
     o for o in all_observations
     if o.get("_date") is None or (start_date <= o["_date"] <= end_date)
 ]
+audits_filtered = [
+    a for a in all_audits
+    if a.get("_date") is None or (start_date <= a["_date"] <= end_date)
+]
 
 # Yard filter (applied to display lists)
 if selected_yard == "All Yards":
     motive_display = motive_filtered
     incidents_display = incidents_filtered
     observations_display = observations_filtered
+    audits_display = audits_filtered
 else:
     motive_display = [e for e in motive_filtered if e.get("yard") == selected_yard]
     incidents_display = [i for i in incidents_filtered if i.get("_district") == selected_yard]
     observations_display = [o for o in observations_filtered if o.get("_district") == selected_yard]
+    audits_display = [a for a in audits_filtered if a.get("_district") == selected_yard]
 
 # Aggregated metrics
 by_type = Counter(e["type"] for e in motive_display)
@@ -467,7 +530,7 @@ with st.sidebar:
     qs2.metric("Observations", len(observations_display))
     qs3, qs4 = st.columns(2)
     qs3.metric("Incidents", len(incidents_display))
-    qs4.metric("Drivers", unique_drivers)
+    qs4.metric("Rig Audits", len(audits_display))
 
 
 # =====================================================================
@@ -764,6 +827,119 @@ if view_mode == "Division Overview":
         else:
             st.info("No Motive events in this period.")
 
+    # --- Rig Audits (CSG - Safety Casing Field Assessment) ---
+    with st.expander(
+        f"**Rig Audits --- CSG Field Assessments: {len(audits_display)}**",
+        expanded=len(audits_display) > 0,
+    ):
+        if audits_display:
+            audit_rows = [{
+                "Report #": a.get("Report Number", ""),
+                "Date": (a.get("Date") or "---")[:16],
+                "District": a.get("_district", "---"),
+                "Rig": a.get("Rig", "---"),
+                "Audit Type": a.get("Audit Type", "---"),
+                "Observer": a.get("Observer", "---"),
+                "Score": f"{a.get('_score', 0)}%",
+                "Passed": a.get("_passed", 0),
+                "Failed": a.get("_failed", 0),
+                "Items Checked": a.get("_total_checked", 0),
+            } for a in audits_display]
+
+            st.dataframe(
+                pd.DataFrame(audit_rows),
+                use_container_width=True, hide_index=True)
+
+            # Score gauge for each audit
+            for a in audits_display:
+                score = a.get("_score", 0)
+                rig = a.get("Rig", "Unknown")
+                district = a.get("_district", "Unknown")
+                rpt = a.get("Report Number", "")
+                audit_date = (a.get("Date") or "")[:10]
+                observer = a.get("Observer", "---")
+                score_color = (GREEN if score >= 90
+                               else YELLOW if score >= 75 else RED)
+
+                st.markdown(
+                    f"---\n**{rig}** | {district} | {audit_date} | "
+                    f"Auditor: {observer}")
+
+                # Score bar
+                fig = go.Figure(go.Indicator(
+                    mode="gauge+number",
+                    value=score,
+                    number={"suffix": "%"},
+                    gauge={
+                        "axis": {"range": [0, 100]},
+                        "bar": {"color": score_color},
+                        "steps": [
+                            {"range": [0, 75], "color": "#fee2e2"},
+                            {"range": [75, 90], "color": "#fef3c7"},
+                            {"range": [90, 100], "color": "#d1fae5"},
+                        ],
+                        "threshold": {
+                            "line": {"color": DARK, "width": 2},
+                            "thickness": 0.75, "value": 90,
+                        },
+                    },
+                    title={"text": f"Audit Score --- {rig}"},
+                ))
+                fig.update_layout(
+                    height=220,
+                    margin=dict(l=30, r=30, t=60, b=20))
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Failed items detail
+                failed_items = a.get("_failed_items", [])
+                if failed_items:
+                    st.markdown(
+                        f"**Failed Items ({len(failed_items)}):**")
+                    for fi in failed_items:
+                        st.write(f"- {fi}")
+                else:
+                    st.success("All checklist items passed.")
+
+            # Summary charts if multiple audits
+            if len(audits_display) > 1:
+                st.markdown("---")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    fig = go.Figure(go.Bar(
+                        x=[a.get("Rig", "?") for a in audits_display],
+                        y=[a.get("_score", 0) for a in audits_display],
+                        marker_color=[
+                            GREEN if a.get("_score", 0) >= 90
+                            else YELLOW if a.get("_score", 0) >= 75
+                            else RED for a in audits_display],
+                        text=[f"{a.get('_score', 0)}%"
+                              for a in audits_display],
+                        textposition="outside",
+                    ))
+                    fig.update_layout(
+                        title="Audit Scores by Rig",
+                        yaxis=dict(range=[0, 105]),
+                        height=300,
+                        margin=dict(l=40, r=20, t=40, b=40))
+                    fig.add_hline(
+                        y=90, line_dash="dot", line_color=GREEN,
+                        annotation_text="Target: 90%")
+                    st.plotly_chart(fig, use_container_width=True)
+                with col_b:
+                    dist_counts = Counter(
+                        a.get("_district", "?") for a in audits_display)
+                    fig = go.Figure(go.Pie(
+                        labels=list(dist_counts.keys()),
+                        values=list(dist_counts.values()),
+                        hole=0.4,
+                    ))
+                    fig.update_layout(
+                        title="Audits by District", height=300,
+                        margin=dict(l=20, r=20, t=40, b=20))
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No CSG rig audits in this period.")
+
     st.write("")
 
     # ── 6  Repeat Offenders ──
@@ -990,9 +1166,9 @@ elif view_mode == "Individual Yard":
 
     st.write("")
 
-    # ── Tabs: Incidents | Observations | Drivers ──
-    tab_inc, tab_obs, tab_drv = st.tabs(
-        ["Incidents", "Observations", "Driver Events"])
+    # ── Tabs: Incidents | Observations | Drivers | Rig Audits ──
+    tab_inc, tab_obs, tab_drv, tab_aud = st.tabs(
+        ["Incidents", "Observations", "Driver Events", "Rig Audits"])
 
     with tab_inc:
         st.markdown(f"### {yard} --- Incidents ({len(incidents_display)})")
@@ -1114,6 +1290,71 @@ elif view_mode == "Individual Yard":
                     st.plotly_chart(fig, use_container_width=True)
         else:
             st.info(f"No Motive events for {yard} in this period.")
+
+    with tab_aud:
+        st.markdown(
+            f"### {yard} --- Rig Audits ({len(audits_display)})")
+        if audits_display:
+            rows = [{
+                "Report #": a.get("Report Number", ""),
+                "Date": (a.get("Date") or "---")[:16],
+                "Rig": a.get("Rig", "---"),
+                "Audit Type": a.get("Audit Type", "---"),
+                "Observer": a.get("Observer", "---"),
+                "Score": f"{a.get('_score', 0)}%",
+                "Passed": a.get("_passed", 0),
+                "Failed": a.get("_failed", 0),
+            } for a in audits_display]
+            st.dataframe(
+                pd.DataFrame(rows),
+                use_container_width=True, hide_index=True)
+
+            for a in audits_display:
+                score = a.get("_score", 0)
+                rig = a.get("Rig", "Unknown")
+                audit_date = (a.get("Date") or "")[:10]
+                observer = a.get("Observer", "---")
+                score_color = (GREEN if score >= 90
+                               else YELLOW if score >= 75 else RED)
+
+                st.markdown(
+                    f"---\n**{rig}** | {audit_date} | "
+                    f"Auditor: {observer}")
+
+                fig = go.Figure(go.Indicator(
+                    mode="gauge+number",
+                    value=score,
+                    number={"suffix": "%"},
+                    gauge={
+                        "axis": {"range": [0, 100]},
+                        "bar": {"color": score_color},
+                        "steps": [
+                            {"range": [0, 75], "color": "#fee2e2"},
+                            {"range": [75, 90], "color": "#fef3c7"},
+                            {"range": [90, 100], "color": "#d1fae5"},
+                        ],
+                        "threshold": {
+                            "line": {"color": DARK, "width": 2},
+                            "thickness": 0.75, "value": 90,
+                        },
+                    },
+                    title={"text": f"Audit Score --- {rig}"},
+                ))
+                fig.update_layout(
+                    height=220,
+                    margin=dict(l=30, r=30, t=60, b=20))
+                st.plotly_chart(fig, use_container_width=True)
+
+                failed_items = a.get("_failed_items", [])
+                if failed_items:
+                    st.markdown(
+                        f"**Failed Items ({len(failed_items)}):**")
+                    for fi in failed_items:
+                        st.write(f"- {fi}")
+                else:
+                    st.success("All checklist items passed.")
+        else:
+            st.info(f"No rig audits for {yard} in this period.")
 
 
 # =====================================================================
