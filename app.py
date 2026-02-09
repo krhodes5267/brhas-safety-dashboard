@@ -238,7 +238,6 @@ def parse_motive(raw):
 
 DISTRICT_ALIASES = {
     "midland yukon": "Midland",
-    "midland per": "Midland",
 }
 
 def normalize_district(raw_district):
