@@ -127,7 +127,7 @@ def _kpa_post(method, payload=None):
     body = dict(payload or {})
     body["token"] = KPA_API_TOKEN
     url = f"{KPA_BASE}/{method}"
-    resp = requests.post(url, json=body, timeout=15)
+    resp = requests.post(url, json=body, timeout=30)
     log.info(f"  KPA {method}: {resp.status_code}")
     if resp.status_code == 200:
         return resp.json()
@@ -148,42 +148,44 @@ def _kpa_discover_forms():
     return []
 
 
-def _kpa_fetch_responses(form_id, form_name, after_ms):
-    """Fetch responses for a single KPA form."""
+def _kpa_fetch_flat(form_id, form_name, after_ms):
+    """Fetch responses via responses.flat (JSON) — gives labeled fields.
+
+    Returns a list of dicts, each with human-readable keys like
+    'Service Line', 'District', 'report number', etc.
+    """
     try:
-        data = _kpa_post("responses.list", {
+        data = _kpa_post("responses.flat", {
             "form_id": form_id,
             "after": after_ms,
-            "limit": 500,
+            "limit": 1000,
+            "format": "json",
         })
-        if data and data.get("ok"):
-            responses = data.get("responses", [])
-            log.info(f"    form '{form_name}' → {len(responses)} responses")
-            return responses
-    except Exception as e:
-        log.error(f"    form '{form_name}' error: {e}")
-    return []
+        if not data or not data.get("ok"):
+            return []
 
+        rows = data.get("responses", [])
+        if len(rows) < 2:
+            log.info(f"    form '{form_name}' → 0 data rows")
+            return []
 
-def _kpa_bearer_fallback(endpoint, label):
-    """Last-resort GET with Bearer auth (may work on some KPA setups)."""
-    try:
-        log.info(f"  KPA: trying GET /{endpoint} with Bearer token …")
-        resp = requests.get(
-            f"{KPA_BASE}/{endpoint}",
-            headers={
-                "Authorization": f"Bearer {KPA_API_TOKEN}",
-                "Content-Type": "application/json",
-            },
-            params={"days": 7},
-            timeout=15,
-        )
-        log.info(f"    → {resp.status_code}")
-        if resp.status_code == 200:
-            data = resp.json()
-            return data.get(label, data.get("responses", []))
+        # First row is the header (field_id → column name mapping)
+        header = rows[0]
+        data_rows = rows[1:]
+
+        # Convert each row from {field_id: value} to {column_name: value}
+        result = []
+        for row in data_rows:
+            record = {}
+            for field_id, value in row.items():
+                col_name = header.get(field_id, field_id)
+                record[col_name] = value
+            result.append(record)
+
+        log.info(f"    form '{form_name}' → {len(result)} rows (flat)")
+        return result
     except Exception as e:
-        log.error(f"    Bearer fallback error: {e}")
+        log.error(f"    form '{form_name}' flat error: {e}")
     return []
 
 
@@ -192,7 +194,7 @@ def _kpa_bearer_fallback(endpoint, label):
 INCIDENT_KEYWORDS = ["incident", "injury", "accident", "report"]
 
 def fetch_kpa_incidents():
-    """Fetch incidents from KPA EHS (last 7 days)."""
+    """Fetch incidents from KPA EHS (last 7 days) with full field data."""
     if not KPA_API_TOKEN:
         log.error("KPA_API_TOKEN not set — check .env file")
         return _empty_kpa("incidents", "No API token configured")
@@ -207,11 +209,8 @@ def fetch_kpa_incidents():
     for form in forms:
         name = (form.get("name") or "").lower()
         if any(kw in name for kw in INCIDENT_KEYWORDS):
-            items = _kpa_fetch_responses(form["id"], form.get("name", ""), after_ms)
+            items = _kpa_fetch_flat(form["id"], form.get("name", ""), after_ms)
             all_items.extend(items)
-
-    if not all_items:
-        all_items = _kpa_bearer_fallback("incidents", "incidents")
 
     return {
         "incidents": all_items,
@@ -226,7 +225,7 @@ def fetch_kpa_incidents():
 OBSERVATION_KEYWORDS = ["observation", "safety", "hazard", "near miss", "behavior"]
 
 def fetch_kpa_observations():
-    """Fetch observations from KPA EHS (last 7 days)."""
+    """Fetch observations from KPA EHS (last 7 days) with full field data."""
     if not KPA_API_TOKEN:
         log.error("KPA_API_TOKEN not set — check .env file")
         return _empty_kpa("observations", "No API token configured")
@@ -241,11 +240,8 @@ def fetch_kpa_observations():
     for form in forms:
         name = (form.get("name") or "").lower()
         if any(kw in name for kw in OBSERVATION_KEYWORDS):
-            items = _kpa_fetch_responses(form["id"], form.get("name", ""), after_ms)
+            items = _kpa_fetch_flat(form["id"], form.get("name", ""), after_ms)
             all_items.extend(items)
-
-    if not all_items:
-        all_items = _kpa_bearer_fallback("observations", "observations")
 
     return {
         "observations": all_items,

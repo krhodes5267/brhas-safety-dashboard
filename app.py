@@ -210,11 +210,26 @@ def parse_motive(raw):
     }
 
 
+CASING_SERVICE_LINES = {"casing", "rat hole"}
+
 def parse_kpa(raw, key):
     if not raw:
-        return {"items": [], "count": 0, "fetched_at": None}
-    items = raw.get(key, [])
-    return {"items": items, "count": len(items), "fetched_at": raw.get("fetched_at")}
+        return {"items": [], "count": 0, "total_before_filter": 0, "fetched_at": None}
+    all_items = raw.get(key, [])
+
+    # Filter to Casing Division by Service Line field
+    items = []
+    for item in all_items:
+        sl = (item.get("Service Line") or item.get("service_line") or "").strip().lower()
+        if sl in CASING_SERVICE_LINES:
+            items.append(item)
+
+    return {
+        "items": items,
+        "count": len(items),
+        "total_before_filter": len(all_items),
+        "fetched_at": raw.get("fetched_at"),
+    }
 
 
 # Load
@@ -248,11 +263,18 @@ with col_title:
         'Casing Division &nbsp;|&nbsp; Live Safety Intelligence</span>',
         unsafe_allow_html=True)
 
+filter_parts = []
 if motive["total_before_filter"] > 0:
-    st.caption(
-        f"Showing **{motive['count']}** Casing Division events "
-        f"(filtered from {motive['total_before_filter']} company-wide)"
-    )
+    filter_parts.append(
+        f"Motive: **{motive['count']}**/{motive['total_before_filter']} events")
+if incidents["total_before_filter"] > 0:
+    filter_parts.append(
+        f"Incidents: **{incidents['count']}**/{incidents['total_before_filter']}")
+if observations["total_before_filter"] > 0:
+    filter_parts.append(
+        f"Observations: **{observations['count']}**/{observations['total_before_filter']}")
+if filter_parts:
+    st.caption("Casing Division only — " + " | ".join(filter_parts))
 
 st.divider()
 
@@ -382,23 +404,31 @@ st.write("")
 st.markdown('<div class="section-hdr">📋 Division Drill-Downs</div>',
             unsafe_allow_html=True)
 
-with st.expander(f"**Total Incidents: {incidents['count'] + 8} (↑ 40% vs Jan)**"):
-    st.markdown(
-        f"- Report Only: 3\n- First Aid: 1\n- Equipment: 2\n"
-        f"- At-Fault Vehicle: 1\n- Recordable: 1\n"
-        f"- Near Miss: 3\n- Quality: 2\n"
-        f"- *KPA Live: {incidents['count']} incident reports filed*"
-    )
+with st.expander(f"**KPA Incidents — Casing: {incidents['count']}**"):
+    if incidents["count"] > 0:
+        for item in incidents["items"]:
+            inc_type = item.get("Incident Type", "—")
+            district = item.get("District", "—")
+            date = item.get("Date", "—")
+            employee = item.get("Employee", "—")
+            st.write(f"- **{inc_type}** — {district} — {employee} ({date})")
+    else:
+        st.success("No Casing Division incidents in the last 7 days.")
 
-with st.expander(f"**Total Observations: {observations['count']} (live from KPA)**"):
-    obs_by_day = Counter()
+with st.expander(f"**Observations — Casing: {observations['count']}**"):
+    obs_types = Counter()
+    obs_districts = Counter()
     for item in observations["items"]:
-        ts = item.get("created", 0)
-        if ts:
-            obs_by_day[datetime.fromtimestamp(ts / 1000).strftime("%a %m/%d")] += 1
-    if obs_by_day:
-        for day, cnt in sorted(obs_by_day.items()):
-            st.write(f"- {day}: **{cnt}** observations")
+        obs_types[item.get("Type of Observation", "—")] += 1
+        obs_districts[item.get("District", "—")] += 1
+    if obs_types:
+        st.markdown("**By type:**")
+        for t, c in obs_types.most_common():
+            st.write(f"- {t}: **{c}**")
+    if obs_districts:
+        st.markdown("**By district:**")
+        for d, c in obs_districts.most_common():
+            st.write(f"- {d}: **{c}**")
 
 with st.expander("**Total Rig Audits: 24 (↑ 20% vs Jan)**"):
     st.markdown(
@@ -586,12 +616,18 @@ if by_day:
 # ── Observations by day ──
 obs_daily = Counter()
 for item in observations["items"]:
-    ts = item.get("created", 0)
-    if ts:
-        obs_daily[datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")] += 1
+    # Flat format: "Date" is a string like "2026-02-09 16:51:54"
+    # Legacy format: "created" is epoch-ms
+    date_str = item.get("Date", "")
+    if date_str and isinstance(date_str, str) and len(date_str) >= 10:
+        obs_daily[date_str[:10]] += 1
+    else:
+        ts = item.get("created", item.get("Updated Time", 0))
+        if ts and isinstance(ts, (int, float)):
+            obs_daily[datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")] += 1
 
 if obs_daily:
-    st.markdown("**KPA Observations by Day**")
+    st.markdown("**KPA Observations by Day (Casing Only)**")
     days_s = sorted(obs_daily.keys())
     fig = go.Figure()
     fig.add_trace(go.Bar(
