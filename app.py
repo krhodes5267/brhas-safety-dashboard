@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import json
 import plotly.graph_objects as go
@@ -113,6 +114,26 @@ def load_json(filename):
     return None
 
 
+def is_casing_vehicle(vehicle_number):
+    """Return True if the vehicle belongs to the Casing division.
+
+    Casing vehicles follow two naming patterns:
+      - Number ending with 'C' (e.g. 1894C, 5015C, 2352C - CDL A DRIVER)
+      - Contains '-RAT-' for rat-hole operations (e.g. LL-RAT-2516, WIN-RAT-2284)
+
+    Non-casing prefixes (excluded): BTI (trucking), VAL (valor),
+    POL (polaris), CON (construction), PIT, SALES, Safety-only.
+    """
+    if not vehicle_number:
+        return False
+    vn = vehicle_number.strip()
+    if "-RAT-" in vn:
+        return True
+    if re.match(r"^\d+C(\s|$|-)", vn):
+        return True
+    return False
+
+
 def location_to_yard(loc_str):
     """Map a Motive location string to the nearest casing yard."""
     if not loc_str:
@@ -125,12 +146,23 @@ def location_to_yard(loc_str):
 
 
 def parse_motive(raw):
+    empty = {"events": [], "count": 0, "total_before_filter": 0,
+             "by_type": {}, "by_day": {}, "by_location": {},
+             "by_yard": {}, "drivers": {}, "yard_drivers": {},
+             "fetched_at": None}
     if not raw:
-        return {"events": [], "count": 0, "by_type": {}, "by_day": {},
-                "by_location": {}, "by_yard": {}, "drivers": {},
-                "yard_drivers": {}, "fetched_at": None}
+        return empty
 
-    events = raw.get("events", [])
+    all_events = raw.get("events", [])
+
+    # ── Filter to Casing Division only ──
+    events = []
+    for entry in all_events:
+        evt = entry.get("driver_performance_event", entry)
+        veh = evt.get("vehicle") or {}
+        if is_casing_vehicle(veh.get("number", "")):
+            events.append(entry)
+
     by_type = Counter()
     by_day = Counter()
     by_location = Counter()
@@ -167,6 +199,7 @@ def parse_motive(raw):
     return {
         "events": events,
         "count": len(events),
+        "total_before_filter": len(all_events),
         "by_type": dict(by_type.most_common()),
         "by_day": dict(sorted(by_day.items())),
         "by_location": dict(by_location.most_common(10)),
@@ -214,6 +247,12 @@ with col_title:
         f'<span style="font-size:14px; color:{GRAY};">'
         'Casing Division &nbsp;|&nbsp; Live Safety Intelligence</span>',
         unsafe_allow_html=True)
+
+if motive["total_before_filter"] > 0:
+    st.caption(
+        f"Showing **{motive['count']}** Casing Division events "
+        f"(filtered from {motive['total_before_filter']} company-wide)"
+    )
 
 st.divider()
 
