@@ -36,43 +36,56 @@ log = logging.getLogger("fetch_live_data")
 
 # ── Motive ────────────────────────────────────────────────────────────
 
+LOOKBACK_DAYS = 90  # Fetch 90 days so dashboard 7/30/90/custom filters all work
+
+
 def fetch_motive_events():
-    """Fetch driver safety / speeding events from Motive (last 7 days)."""
+    """Fetch driver safety events from Motive (last 90 days, paginated)."""
     if not MOTIVE_API_KEY:
         log.error("MOTIVE_API_KEY not set — check .env file")
         return _empty_motive("No API key configured")
 
     headers = {"X-API-Key": MOTIVE_API_KEY}
     end = datetime.now(timezone.utc)
-    start = end - timedelta(days=7)
+    start = end - timedelta(days=LOOKBACK_DAYS)
     all_events = []
 
-    # Try v2 driver_performance_events (documented endpoint)
+    # Try v2 driver_performance_events with pagination
     try:
-        log.info("Motive: trying GET /v2/driver_performance_events …")
-        resp = requests.get(
-            f"{MOTIVE_BASE}/v2/driver_performance_events",
-            headers=headers,
-            params={
-                "start_date": start.strftime("%Y-%m-%d"),
-                "end_date": end.strftime("%Y-%m-%d"),
-                "per_page": 100,
-                "page_no": 1,
-            },
-            timeout=15,
-        )
-        log.info(f"  → {resp.status_code}")
-        if resp.status_code == 200:
+        page = 1
+        while True:
+            log.info(f"Motive: GET /v2/driver_performance_events page {page} …")
+            resp = requests.get(
+                f"{MOTIVE_BASE}/v2/driver_performance_events",
+                headers=headers,
+                params={
+                    "start_date": start.strftime("%Y-%m-%d"),
+                    "end_date": end.strftime("%Y-%m-%d"),
+                    "per_page": 100,
+                    "page_no": page,
+                },
+                timeout=30,
+            )
+            log.info(f"  → {resp.status_code}")
+            if resp.status_code != 200:
+                log.warning(f"  v2 failed: {resp.text[:300]}")
+                break
             data = resp.json()
             events = data.get("driver_performance_events", [])
+            if not events:
+                break
             all_events.extend(events)
-            log.info(f"  ✓ {len(events)} events from v2")
-        else:
-            log.warning(f"  v2 failed: {resp.text[:300]}")
+            log.info(f"  ✓ page {page}: {len(events)} events (total: {len(all_events)})")
+            # Stop if fewer than a full page (last page)
+            if len(events) < 100:
+                break
+            page += 1
+            if page > 50:  # safety cap
+                break
     except Exception as e:
         log.error(f"  v2 error: {e}")
 
-    # Fallback: v1 safety/events
+    # Fallback: v1 safety/events (no pagination)
     if not all_events:
         try:
             log.info("Motive: trying GET /v1/safety/events …")
@@ -84,7 +97,7 @@ def fetch_motive_events():
                     "start_time": start.isoformat(),
                     "end_time": end.isoformat(),
                 },
-                timeout=15,
+                timeout=30,
             )
             log.info(f"  → {resp.status_code}")
             if resp.status_code == 200:
@@ -113,7 +126,7 @@ def _empty_motive(reason):
         "count": 0,
         "fetched_at": datetime.now().isoformat(),
         "period": {
-            "start": (now - timedelta(days=7)).isoformat(),
+            "start": (now - timedelta(days=LOOKBACK_DAYS)).isoformat(),
             "end": now.isoformat(),
         },
         "error": reason,
@@ -151,39 +164,65 @@ def _kpa_discover_forms():
 def _kpa_fetch_flat(form_id, form_name, after_ms):
     """Fetch responses via responses.flat (JSON) — gives labeled fields.
 
+    Paginates using 'after' timestamp to get all records (max 1000/page).
     Returns a list of dicts, each with human-readable keys like
     'Service Line', 'District', 'report number', etc.
     """
+    all_results = []
+    cursor = after_ms
+    header = None
+    page = 0
+
     try:
-        data = _kpa_post("responses.flat", {
-            "form_id": form_id,
-            "after": after_ms,
-            "limit": 1000,
-            "format": "json",
-        })
-        if not data or not data.get("ok"):
-            return []
+        while True:
+            page += 1
+            data = _kpa_post("responses.flat", {
+                "form_id": form_id,
+                "after": cursor,
+                "limit": 1000,
+                "format": "json",
+            })
+            if not data or not data.get("ok"):
+                break
 
-        rows = data.get("responses", [])
-        if len(rows) < 2:
-            log.info(f"    form '{form_name}' → 0 data rows")
-            return []
+            rows = data.get("responses", [])
+            if len(rows) < 2:
+                break
 
-        # First row is the header (field_id → column name mapping)
-        header = rows[0]
-        data_rows = rows[1:]
+            # First row is always the header
+            if header is None:
+                header = rows[0]
+            data_rows = rows[1:]
 
-        # Convert each row from {field_id: value} to {column_name: value}
-        result = []
-        for row in data_rows:
-            record = {}
-            for field_id, value in row.items():
-                col_name = header.get(field_id, field_id)
-                record[col_name] = value
-            result.append(record)
+            for row in data_rows:
+                record = {}
+                for field_id, value in row.items():
+                    col_name = header.get(field_id, field_id)
+                    record[col_name] = value
+                all_results.append(record)
 
-        log.info(f"    form '{form_name}' → {len(result)} rows (flat)")
-        return result
+            # If we got a full page, advance cursor to latest Updated Time
+            if len(data_rows) >= 1000:
+                # Find the max updated timestamp to use as next cursor
+                max_ts = cursor
+                for row in data_rows:
+                    ut = row.get("updated_time") or row.get("Updated Time")
+                    if ut and isinstance(ut, (int, float)) and ut > max_ts:
+                        max_ts = int(ut)
+                if max_ts > cursor:
+                    cursor = max_ts
+                else:
+                    break  # can't advance, stop
+            else:
+                break  # last page
+
+            if page >= 20:  # safety cap
+                break
+
+        if all_results:
+            log.info(f"    form '{form_name}' → {len(all_results)} rows "
+                     f"({page} page{'s' if page > 1 else ''})")
+        return all_results
     except Exception as e:
         log.error(f"    form '{form_name}' flat error: {e}")
     return []
@@ -194,13 +233,13 @@ def _kpa_fetch_flat(form_id, form_name, after_ms):
 INCIDENT_KEYWORDS = ["incident", "injury", "accident", "report"]
 
 def fetch_kpa_incidents():
-    """Fetch incidents from KPA EHS (last 7 days) with full field data."""
+    """Fetch incidents from KPA EHS (last 90 days) with full field data."""
     if not KPA_API_TOKEN:
         log.error("KPA_API_TOKEN not set — check .env file")
         return _empty_kpa("incidents", "No API token configured")
 
     now = datetime.now(timezone.utc)
-    start = now - timedelta(days=7)
+    start = now - timedelta(days=LOOKBACK_DAYS)
     after_ms = int(start.timestamp() * 1000)
     all_items = []
 
@@ -225,13 +264,13 @@ def fetch_kpa_incidents():
 OBSERVATION_KEYWORDS = ["observation", "safety", "hazard", "near miss", "behavior"]
 
 def fetch_kpa_observations():
-    """Fetch observations from KPA EHS (last 7 days) with full field data."""
+    """Fetch observations from KPA EHS (last 90 days) with full field data."""
     if not KPA_API_TOKEN:
         log.error("KPA_API_TOKEN not set — check .env file")
         return _empty_kpa("observations", "No API token configured")
 
     now = datetime.now(timezone.utc)
-    start = now - timedelta(days=7)
+    start = now - timedelta(days=LOOKBACK_DAYS)
     after_ms = int(start.timestamp() * 1000)
     all_items = []
 
@@ -258,7 +297,7 @@ def _empty_kpa(label, reason):
         "count": 0,
         "fetched_at": datetime.now().isoformat(),
         "period": {
-            "start": (now - timedelta(days=7)).isoformat(),
+            "start": (now - timedelta(days=LOOKBACK_DAYS)).isoformat(),
             "end": now.isoformat(),
         },
         "error": reason,

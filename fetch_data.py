@@ -25,17 +25,20 @@ def log(message):
     log_msg = f"[{timestamp}] {message}"
     print(log_msg)
 
+LOOKBACK_DAYS = 90  # Fetch 90 days so dashboard 7/30/90/custom filters work
+
+
 def fetch_motive_events():
-    """Fetch speeding events from Motive (last 7 days)"""
+    """Fetch speeding events from Motive (last 90 days)"""
     log(">>> Fetching Motive speeding events...")
-    
+
     headers = {
         "X-Api-Key": MOTIVE_API_KEY,
         "Content-Type": "application/json"
     }
-    
+
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=7)
+    start_date = end_date - timedelta(days=LOOKBACK_DAYS)
     
     try:
         url = f"{MOTIVE_BASE_URL}/safety/events"
@@ -60,17 +63,17 @@ def fetch_motive_events():
         return {"data": []}
 
 def fetch_kpa_incidents():
-    """Fetch incidents from KPA EHS (last 7 days)"""
+    """Fetch incidents from KPA EHS (last 90 days)"""
     log(">>> Fetching KPA incidents...")
-    
+
     headers = {
         "Authorization": f"Bearer {KPA_API_TOKEN}",
         "Content-Type": "application/json"
     }
-    
+
     try:
         url = f"{KPA_BASE_URL}/incidents"
-        params = {"days": 7}
+        params = {"days": LOOKBACK_DAYS}
         
         response = requests.get(url, headers=headers, params=params, timeout=10)
         
@@ -87,17 +90,17 @@ def fetch_kpa_incidents():
         return {"incidents": []}
 
 def fetch_kpa_observations():
-    """Fetch observations from KPA EHS (last 7 days)"""
+    """Fetch observations from KPA EHS (last 90 days)"""
     log(">>> Fetching KPA observations...")
-    
+
     headers = {
         "Authorization": f"Bearer {KPA_API_TOKEN}",
         "Content-Type": "application/json"
     }
-    
+
     try:
         url = f"{KPA_BASE_URL}/observations"
-        params = {"days": 7}
+        params = {"days": LOOKBACK_DAYS}
         
         response = requests.get(url, headers=headers, params=params, timeout=10)
         
