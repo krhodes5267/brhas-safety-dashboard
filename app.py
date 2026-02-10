@@ -481,22 +481,22 @@ with st.sidebar:
 #  APPLY FILTERS
 # =====================================================================
 
-# Date filter
+# Date filter — only include items with a parseable date inside the range
 motive_filtered = [
     e for e in all_motive
-    if e.get("date") is None or (start_date <= e["date"] <= end_date)
+    if e.get("date") is not None and start_date <= e["date"] <= end_date
 ]
 incidents_filtered = [
     i for i in all_incidents
-    if i.get("_date") is None or (start_date <= i["_date"] <= end_date)
+    if i.get("_date") is not None and start_date <= i["_date"] <= end_date
 ]
 observations_filtered = [
     o for o in all_observations
-    if o.get("_date") is None or (start_date <= o["_date"] <= end_date)
+    if o.get("_date") is not None and start_date <= o["_date"] <= end_date
 ]
 audits_filtered = [
     a for a in all_audits
-    if a.get("_date") is None or (start_date <= a["_date"] <= end_date)
+    if a.get("_date") is not None and start_date <= a["_date"] <= end_date
 ]
 
 # Yard filter (applied to display lists)
@@ -697,6 +697,16 @@ if view_mode == "Division Overview":
     st.markdown(
         '<div class="section-hdr">Division Drill-Downs</div>',
         unsafe_allow_html=True)
+
+    # Active filter indicator
+    period_label = f"{start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}"
+    yard_label = selected_yard
+    st.caption(
+        f"Showing **{yard_label}** | **{time_period}** ({period_label}) "
+        f"--- {len(incidents_display)} incidents, "
+        f"{len(observations_display)} observations, "
+        f"{len(motive_display)} driver events, "
+        f"{len(audits_display)} rig audits")
 
     # --- Incidents table ---
     with st.expander(
